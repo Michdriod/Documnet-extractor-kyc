@@ -1,6 +1,6 @@
 import time
 import asyncio
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Set
 import logging
 
 from app.multidoc.page_loader import file_bytes_to_pages
@@ -14,6 +14,12 @@ from app.extraction.prompts import build_prompt
 from app.extraction.vision_model_client import vision_extractor
 
 logger = logging.getLogger("kyc.extract")
+
+# Heuristic controls (tunable / could move to settings later)
+FORWARD_FILL = True                 # propagate previous non-null doc_type
+BRIDGE_GAP = True                   # bridge A, None, A pattern
+MIN_FIELDS_FOR_NEW_DOC = 3          # if a None page has this many distinct keys and little overlap, consider new doc
+MIN_KEY_OVERLAP_FOR_CONTINUATION = 1  # at least this many repeated keys means continuation
 
 
 def _merge_field_sets(results: List[FlatExtractionResult]) -> Tuple[Dict[str,str], Dict[str,str]]:
@@ -89,6 +95,38 @@ async def _extract_page(page_bytes: bytes, allowed_keys: List[str]) -> FlatExtra
     return FlatExtractionResult(doc_type=doc_type, fields=fields, extra_fields=extra)
 
 
+def _smooth_doc_types(results: List[FlatExtractionResult]) -> List[Optional[str]]:
+    types = [r.doc_type for r in results]
+    if not (FORWARD_FILL or BRIDGE_GAP):
+        return types
+
+    page_key_sets: List[Set[str]] = [set(r.fields.keys()) | set(r.extra_fields.keys()) for r in results]
+    out = types[:]
+
+    if FORWARD_FILL:
+        last_type = None
+        last_keys: Set[str] = set()
+        for i, t in enumerate(out):
+            if t:
+                last_type = t
+                last_keys = page_key_sets[i]
+            else:
+                if last_type:
+                    overlap = len(page_key_sets[i] & last_keys)
+                    # continuation if few keys OR overlap
+                    if len(page_key_sets[i]) < MIN_FIELDS_FOR_NEW_DOC or overlap >= MIN_KEY_OVERLAP_FOR_CONTINUATION:
+                        out[i] = last_type
+                        # don't update last_keys (keeps anchor)
+
+    if BRIDGE_GAP:
+        # A, None, A pattern
+        for i in range(1, len(out) - 1):
+            if not types[i] and out[i - 1] and out[i + 1] == out[i - 1]:
+                out[i] = out[i - 1]
+
+    return out
+
+
 async def extract_multi_document(filename: str, file_bytes: bytes) -> MultiExtractionResult:
     start = time.time()
     pages = file_bytes_to_pages(filename, file_bytes)
@@ -107,12 +145,14 @@ async def extract_multi_document(filename: str, file_bytes: bytes) -> MultiExtra
             safe_results.append(r)
             types.append(r.doc_type)
 
-    groups = _group_consecutive(types)
+    # Smooth doc types first to keep continuation pages together
+    smoothed_types = _smooth_doc_types(safe_results)
+    groups = _group_consecutive(smoothed_types)
 
     docs: List[MultiPageDoc] = []
     for gid, g in enumerate(groups):
         segment = [safe_results[i] for i in g]
-        doc_type = next((s.doc_type for s in segment if s.doc_type), None)
+        doc_type = smoothed_types[g[0]] or next((s.doc_type for s in segment if s.doc_type), None)
         merged_fields, merged_extra = _merge_field_sets(segment)
         representative = segment[0]
         docs.append(
@@ -124,7 +164,7 @@ async def extract_multi_document(filename: str, file_bytes: bytes) -> MultiExtra
                 merged_extra_fields=merged_extra,
                 # merged_fields_confidence={},
                 # merged_extra_fields_confidence={},
-                representative=representative,
+                # representative=representative,
             )
         )
 

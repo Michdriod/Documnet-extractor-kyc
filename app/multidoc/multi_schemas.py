@@ -10,7 +10,7 @@ class MultiPageDoc(BaseModel):
     merged_extra_fields: Dict[str, str] = Field(default_factory=dict)
     # merged_fields_confidence: Dict[str, float] = Field(default_factory=dict)
     # merged_extra_fields_confidence: Dict[str, float] = Field(default_factory=dict)
-    representative: FlatExtractionResult
+    # representative: FlatExtractionResult
 
 class MultiExtractionMeta(BaseModel):
     total_pages: int
