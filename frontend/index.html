@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KYC Vision Extraction</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="container"> <!-- Main layout wrapper -->
+    <h1>KYC Vision Extraction (Phase 1)</h1>
+    <form id="uploadForm"> <!-- Upload form -->
+      <div class="field-inline">
+        <label>Source</label>
+        <div class="mode-switch">
+          <label><input type="radio" name="sourceMode" value="file" checked> File</label>
+          <label><input type="radio" name="sourceMode" value="url"> URL</label>
+        </div>
+      </div>
+      <div class="field-group" id="fileGroup">
+        <label for="fileInput">Document (PDF / Image)</label>
+        <input id="fileInput" name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" />
+      </div>
+      <div class="field-group hidden" id="urlGroup">
+        <label for="sourceUrl">Source URL (PDF / Image)</label>
+        <input id="sourceUrl" name="source_url" type="url" placeholder="https://example.com/doc.pdf" />
+      </div>
+      <div class="field-inline">
+        <label for="docType">Doc Type (optional)</label>
+        <input id="docType" name="doc_type" placeholder="passport, national_id, ..." />
+      </div>
+      <small class="hint">Provide either a file or a URL (mutually exclusive).</small>
+      <button id="submitBtn" type="submit">Extract</button>
+    </form>
+
+    <div id="status" class="status"></div>
+
+  <section id="resultSection" class="hidden"> <!-- Extraction result area -->
+      <h2>Result</h2>
+      <div class="meta-block">
+        <h3>Meta</h3>
+        <pre id="metaPre"></pre>
+      </div>
+      <div class="fields-block">
+        <h3>Canonical Fields</h3>
+        <table id="fieldsTable"><thead><tr><th>Field</th><th>Value</th><th>Conf.</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="fields-block">
+        <h3>Extra Fields</h3>
+        <table id="extraTable"><thead><tr><th>Field</th><th>Value</th><th>Conf.</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="missing-block hidden" id="missingWrap">
+        <h3>Missing Critical</h3>
+        <ul id="missingList"></ul>
+      </div>
+      <div class="raw-json">
+        <details>
+          <summary>Raw JSON</summary>
+          <pre id="rawJson"></pre>
+        </details>
+      </div>
+    </section>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
