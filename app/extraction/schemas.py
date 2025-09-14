@@ -168,7 +168,7 @@ class CanonicalFields(BaseModel):
     watermark_present: Optional[bool] = None
 
 
-class FlatExtractionResult(BaseModel):
+class FlatExtractionResult(BaseModel):  # simplified output for single document
     """Return shape including confidence maps (now always provided).
 
     fields / extra_fields map field_name -> string value.
@@ -181,7 +181,7 @@ class FlatExtractionResult(BaseModel):
     # extra_fields_confidence: Dict[str, float] = Field(default_factory=dict)
 
 
-class ErrorEnvelope(BaseModel):
+class ErrorEnvelope(BaseModel):  # consistent error body (unused for success)
     """Uniform error body returned on failure."""
 
     error: Dict[str, str]

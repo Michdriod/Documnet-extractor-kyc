@@ -1,4 +1,8 @@
-"""Model client abstraction for a single synchronous vision extraction call."""
+"""Model client abstraction layer.
+
+Hides underlying provider specifics (currently Groq) and exposes
+simple .run(prompt, images) returning dict with raw output + timing.
+"""
 
 from typing import List, Dict, Any, Optional
 import time
@@ -16,7 +20,7 @@ from pydantic_ai.providers.groq import GroqProvider
 
 
 
-system_prompt=SYSTEM_PROMPT_BASE
+system_prompt=SYSTEM_PROMPT_BASE  # Base system instructions reused
 
 class RawExtraction(BaseModel):
     """Loose model for initial LLM JSON prior to normalization."""
@@ -121,7 +125,7 @@ class VisionExtractor:
             if all(tok not in self.settings.VISION_MODEL.lower() for tok in ["llava", "vision", "clip", "mm", "multi", "pix", "phi-3-vision", "llama", "gemma3:4b", "minicpm-v:latest"]):
                 log.warning("model_name_may_not_be_vision_capable model=%s", self.settings.VISION_MODEL)
         agent = self.build_agent(system_prompt, description)
-        inputs: List[Any] = []
+        inputs: List[Any] = []  # Ordered binary contents
         # Only images now; no separate user text message.
         for img in images:
             inputs.append(BinaryContent(data=img, media_type="image/png"))

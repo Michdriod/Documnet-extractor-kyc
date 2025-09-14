@@ -12,15 +12,19 @@ from functools import lru_cache
 
 
 class Settings:
-        """Load process-wide settings from environment (simple, no pydantic)."""
+        """Central runtime switches.
 
-        OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "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")
-        VISION_MODEL: str = os.getenv("VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
-        MAX_FILE_MB: int = int(os.getenv("MAX_FILE_MB", "15"))
-        MAX_PAGES_RENDER: int = int(os.getenv("MAX_PAGES_RENDER", "4"))
-        MULTI_MAX_PAGES: int = int(os.getenv("MULTI_MAX_PAGES", "40"))  # higher cap for multi-doc endpoint
-        DEBUG_EXTRACTION: bool = os.getenv("DEBUG_EXTRACTION", "1") in {"1", "true", "True"}
+        Keep minimal: easy to port later to pydantic-settings if needed.
+        Each attr reads once then cached by get_settings().
+        """
+
+        OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")  # Local model endpoint (legacy path)
+        GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "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")  # Required for Groq model
+        VISION_MODEL: str = os.getenv("VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")  # Model identifier
+        MAX_FILE_MB: int = int(os.getenv("MAX_FILE_MB", "15"))  # Upload size cap
+        MAX_PAGES_RENDER: int = int(os.getenv("MAX_PAGES_RENDER", "4"))  # Single-doc PDF cap
+        MULTI_MAX_PAGES: int = int(os.getenv("MULTI_MAX_PAGES", "40"))  # Multi-doc higher limit
+        DEBUG_EXTRACTION: bool = os.getenv("DEBUG_EXTRACTION", "1") in {"1", "true", "True"}  # Verbose logs toggle
 
 
 @lru_cache

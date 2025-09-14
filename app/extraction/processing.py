@@ -8,11 +8,11 @@ from typing import List, Tuple, Dict, Any
 from app.core.config import get_settings  # Central settings
 from PIL import Image
 
-ALLOWED_EXT = {"pdf", "jpg", "jpeg", "png", "webp"}  # Allowed input surface types
-DATE_RX = re.compile(r"^(19|20)\d{2}[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])$")  # Basic strict date pattern
-MRZ_RX = re.compile(r"^[A-Z0-9<]{20,}$")  # Coarse MRZ line acceptance (length + charset)
-ID_RX = re.compile(r"^[A-Z0-9]{5,}$")  # Generic ID token (len>=5, uppercase letters/digits)
-NON_ALNUM_RX = re.compile(r"[^A-Z0-9<]")  # For sanitizing MRZ lines
+ALLOWED_EXT = {"pdf", "jpg", "jpeg", "png", "webp"}  # Supported file extensions
+DATE_RX = re.compile(r"^(19|20)\d{2}[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])$")  # Strict YYYY-MM-DD or YYYY/MM/DD
+MRZ_RX = re.compile(r"^[A-Z0-9<]{20,}$")  # Coarse MRZ line: long, allowed chars
+ID_RX = re.compile(r"^[A-Z0-9]{5,}$")  # Generic doc/ID token
+NON_ALNUM_RX = re.compile(r"[^A-Z0-9<]")  # Strip disallowed MRZ chars
 
 def generate_request_id() -> str:
     """Return a random hex string for correlation in logs/responses."""
@@ -54,7 +54,7 @@ def render_pdf_pages(data: bytes) -> Tuple[List[bytes], bool]:
         if i >= settings.MAX_PAGES_RENDER:
             truncated = True
             break
-        # 180dpi chosen as balance of clarity vs speed for Phase 1
+    # 180dpi: balance between clarity and speed
         pix = page.get_pixmap(dpi=180)
         images.append(pix.tobytes("png"))
     return images, truncated

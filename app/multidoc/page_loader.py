@@ -1,4 +1,4 @@
-from typing import List
+from typing import List  # simple list of page PNG bytes returned
 from app.core.config import get_settings
 from io import BytesIO
 from PIL import Image
@@ -18,7 +18,7 @@ def file_bytes_to_pages(filename: str, data: bytes) -> List[bytes]:
             pages, truncated = render_pdf_pages(data)
             # If truncated because of single-doc cap, reopen PDF and render remaining up to MULTI_MAX_PAGES
             settings = get_settings()
-            if truncated and len(pages) < settings.MULTI_MAX_PAGES:
+            if truncated and len(pages) < settings.MULTI_MAX_PAGES:  # try to fetch remaining pages beyond single-doc cap
                 try:
                     import fitz  # type: ignore
                     remaining: List[bytes] = []

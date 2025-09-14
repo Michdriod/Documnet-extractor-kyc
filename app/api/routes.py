@@ -43,13 +43,13 @@ async def extract_single(
     settings=Depends(get_settings),
 ):
     """Single fast extraction call. Exactly one of (file | source_url)."""
-    request_id = generate_request_id()
+    request_id = generate_request_id()  # trace id for logs
     try:
         # --- Validate mutual exclusivity of input sources ---
         if (file is None and not source_url) or (file is not None and source_url):
             raise HTTPException(status_code=400, detail="provide_exactly_one_source")
 
-        source_kind = "upload" if file else "url"
+        source_kind = "upload" if file else "url"  # label for logging
         filename = "uploaded"
         data: bytes
 

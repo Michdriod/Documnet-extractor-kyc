@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException  # multi-source endpoint
 import httpx
 from pathlib import Path
 from app.multidoc.extractor import extract_multi_document
@@ -16,7 +16,7 @@ async def extract_multi(
     source_url: str | None = Form(None, description="Remote PDF/image URL"),
     file_path: str | None = Form(None, description="Server-local path (controlled)"),
 ):
-    provided = [x for x in (file, source_url, file_path) if x]
+    provided = [x for x in (file, source_url, file_path) if x]  # enforce exactly one input
     if len(provided) != 1:
         raise HTTPException(status_code=400, detail="provide_exactly_one_source")
 
