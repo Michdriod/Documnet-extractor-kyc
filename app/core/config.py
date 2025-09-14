@@ -19,6 +19,7 @@ class Settings:
         VISION_MODEL: str = os.getenv("VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
         MAX_FILE_MB: int = int(os.getenv("MAX_FILE_MB", "15"))
         MAX_PAGES_RENDER: int = int(os.getenv("MAX_PAGES_RENDER", "4"))
+        MULTI_MAX_PAGES: int = int(os.getenv("MULTI_MAX_PAGES", "40"))  # higher cap for multi-doc endpoint
         DEBUG_EXTRACTION: bool = os.getenv("DEBUG_EXTRACTION", "1") in {"1", "true", "True"}
 
 

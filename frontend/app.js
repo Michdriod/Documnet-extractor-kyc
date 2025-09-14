@@ -13,6 +13,24 @@ const fileGroup = document.getElementById('fileGroup');
 const urlGroup = document.getElementById('urlGroup');
 const sourceUrlInput = document.getElementById('sourceUrl');
 const sourceModeRadios = document.querySelectorAll('input[name="sourceMode"]');
+const extractModeRadios = document.querySelectorAll('input[name="extractMode"]');
+const multiDocsContainer = document.getElementById('multiDocsContainer');
+const multiDocsList = document.getElementById('multiDocsList');
+// Toggle single vs multi result display reset
+extractModeRadios.forEach(r => {
+  r.addEventListener('change', () => {
+    resultSection.classList.add('hidden');
+    rawJson.textContent='';
+    multiDocsList.innerHTML='';
+    multiDocsContainer.classList.add('hidden');
+    setStatus('', 'info');
+  });
+});
+
+function getExtractMode(){
+  const checked = document.querySelector('input[name="extractMode"]:checked');
+  return checked ? checked.value : 'single';
+}
 
 // Toggle visibility between file and URL inputs
 sourceModeRadios.forEach(r => {
@@ -61,6 +79,7 @@ function escapeHtml(str){ // Prevent HTML injection in values
 form.addEventListener('submit', async (e) => { // Handle form submission
   e.preventDefault();
   const mode = getMode();
+  const extractMode = getExtractMode();
   const docType = document.getElementById('docType').value.trim();
   const fd = new FormData();
   if(docType) fd.append('doc_type', docType);
@@ -83,7 +102,8 @@ form.addEventListener('submit', async (e) => { // Handle form submission
   setStatus('Submitting & extracting...','info');
   resultSection.classList.add('hidden');
   try {
-  const resp = await fetch(`/extract/vision/single`, { method:'POST', body: fd });
+  const endpoint = extractMode === 'multi' ? '/extract/vision/multi' : '/extract/vision/single';
+  const resp = await fetch(endpoint, { method:'POST', body: fd });
     const text = await resp.text();
     let json;
     try { json = JSON.parse(text); } catch(_){ throw new Error('Invalid JSON response'); }
@@ -91,7 +111,11 @@ form.addEventListener('submit', async (e) => { // Handle form submission
       const detail = json?.error?.detail || json?.detail || 'Unexpected error';
       throw new Error(detail);
     }
-    populateResult(json);
+    if(extractMode === 'multi') {
+      populateMultiResult(json);
+    } else {
+      populateResult(json);
+    }
     setStatus('Success','success');
   } catch(err){
     console.error(err);
@@ -103,6 +127,7 @@ form.addEventListener('submit', async (e) => { // Handle form submission
 
 function populateResult(data){ // Fill tables from simplified API response
   resultSection.classList.remove('hidden');
+  multiDocsContainer.classList.add('hidden');
   // Derive lightweight meta summary instead of old meta structure
   const summary = {
     doc_type: data.doc_type || null,
@@ -144,4 +169,40 @@ function populateResult(data){ // Fill tables from simplified API response
   // Hide missing section permanently (feature removed)
   missingWrap.classList.add('hidden');
   missingList.innerHTML = '';
+}
+
+function populateMultiResult(data){
+  resultSection.classList.remove('hidden');
+  multiDocsContainer.classList.remove('hidden');
+  // Basic meta
+  const summary = {
+    total_groups: data.documents ? data.documents.length : 0,
+    total_pages: data.meta ? data.meta.total_pages : null,
+    elapsed_ms: data.meta ? data.meta.elapsed_ms : null
+  };
+  metaPre.textContent = JSON.stringify(summary, null, 2);
+  rawJson.textContent = JSON.stringify(data, null, 2);
+  // Clear single tables (not applicable for multi) but keep structure
+  fieldsTableBody.innerHTML = '<tr><td colspan="3">(multi mode - see groups below)</td></tr>';
+  extraTableBody.innerHTML = '<tr><td colspan="3">(multi mode - see groups below)</td></tr>';
+  // Render groups
+  multiDocsList.innerHTML = (data.documents || []).map(doc => {
+    const fRows = Object.entries(doc.merged_fields || {}).map(([k,v])=>`<tr><td>${k}</td><td>${escapeHtml(String(v))}</td></tr>`).join('') || '<tr><td colspan="2">(none)</td></tr>';
+    const xRows = Object.entries(doc.merged_extra_fields || {}).map(([k,v])=>`<tr><td>${k}</td><td>${escapeHtml(String(v))}</td></tr>`).join('') || '<tr><td colspan="2">(none)</td></tr>';
+    return `<div class="multi-doc-card">
+      <h4>Group ${doc.group_id} ${doc.doc_type ? '('+escapeHtml(doc.doc_type)+')' : ''}</h4>
+      <div class="multi-meta">Pages: [${(doc.page_indices||[]).join(', ')}]</div>
+      <details><summary>Fields (${Object.keys(doc.merged_fields||{}).length})</summary>
+        <table class="mini"><tbody>${fRows}</tbody></table>
+      </details>
+      <details><summary>Extra Fields (${Object.keys(doc.merged_extra_fields||{}).length})</summary>
+        <table class="mini"><tbody>${xRows}</tbody></table>
+      </details>
+      <details><summary>Representative Raw</summary>
+        <pre>${escapeHtml(JSON.stringify(doc.representative, null, 2))}</pre>
+      </details>
+    </div>`;
+  }).join('');
+  missingWrap.classList.add('hidden');
+  missingList.innerHTML='';
 }

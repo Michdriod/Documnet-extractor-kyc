@@ -6,9 +6,11 @@ from pathlib import Path
 try:
     # Prefer absolute import to avoid package resolution ambiguity
     from app.api.routes import router  # type: ignore
+    from app.api.routes_multi import router_multi  # type: ignore
 except ImportError:
     # Fallback relative import
     from .api.routes import router  # type: ignore
+    from .api.routes_multi import router_multi  # type: ignore
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # Root project dir
 FRONTEND_DIR = BASE_DIR / "frontend"              # Static frontend dir
@@ -39,7 +41,8 @@ async def root_index():
 async def health():
     return {"status": "ok"}  # Basic liveness
 
-app.include_router(router)  # Mount API routes
+app.include_router(router)
+app.include_router(router_multi)
 
 
 # --- Noise suppression handlers (avoid 404 log noise) ---

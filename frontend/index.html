@@ -17,6 +17,13 @@
           <label><input type="radio" name="sourceMode" value="url"> URL</label>
         </div>
       </div>
+      <div class="field-inline">
+        <label>Extraction Mode</label>
+        <div class="mode-switch">
+          <label><input type="radio" name="extractMode" value="single" checked> Single Doc</label>
+          <label><input type="radio" name="extractMode" value="multi"> Multi Doc</label>
+        </div>
+      </div>
       <div class="field-group" id="fileGroup">
         <label for="fileInput">Document (PDF / Image)</label>
         <input id="fileInput" name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" />
@@ -58,6 +65,10 @@
           <summary>Raw JSON</summary>
           <pre id="rawJson"></pre>
         </details>
+      </div>
+      <div id="multiDocsContainer" class="hidden">
+        <h3>Multi-Document Groups</h3>
+        <div id="multiDocsList"></div>
       </div>
     </section>
   </div>
