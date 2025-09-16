@@ -1,11 +1,28 @@
-"""Pydantic models for API outputs and intermediate raw fields."""
+"""Pydantic models for API outputs and intermediate raw fields.
 
-from typing import Dict, Optional, List, Any
+Layers / roles:
+    CanonicalFields        : Optional superset of identity + document keys used for grounding prompts.
+    FieldWithConfidence    : Normalized wrapper for a single extracted value + confidence score.
+    FlatExtractionResult   : Public API shape (doc_type + two maps of field objects). Can accept legacy plain strings.
+    ErrorEnvelope          : Consistent error response body for FastAPI handlers.
+
+Historical notes:
+    Earlier versions exposed separate parallel confidence maps (fields_confidence, extra_fields_confidence).
+    We keep commented examples so future diffs show evolution and to permit quick rollback if needed.
+"""
+
+from typing import Dict, Optional, List, Any, Union
 from pydantic import BaseModel, Field
 
 
 class CanonicalFields(BaseModel):
-    """Flexible identity field superset (all optional to reduce hallucination)."""
+    """Flexible identity field superset (all optional to reduce hallucination).
+
+    This is intentionally broad; prompts enumerate allowed keys so the model
+    anchors extractions to real-world document semantics (names, dates, IDs...).
+    All fields are optional to discourage the model from fabricating values just
+    to satisfy required schema positions.
+    """
 
     # Core person identifiers
     surname: Optional[str] = None
@@ -168,20 +185,80 @@ class CanonicalFields(BaseModel):
     watermark_present: Optional[bool] = None
 
 
-class FlatExtractionResult(BaseModel):  # simplified output for single document
-    """Return shape including confidence maps (now always provided).
 
-    fields / extra_fields map field_name -> string value.
-    fields_confidence / extra_fields_confidence map field_name -> float confidence 0..1.
+
+class FieldWithConfidence(BaseModel):
+    """Container for a single extracted value and its confidence score.
+
+    confidence is expected to be 0..1. Upstream model may omit or produce
+    out-of-range numbers; from_any() clamps or substitutes defaults.
     """
+
+    value: str
+    confidence: float
+
+    @classmethod
+    def from_any(cls, raw, default_conf: float, lo: float = 0.0, hi: float = 1.0):
+        if isinstance(raw, cls):
+            return cls(
+                value=raw.value,
+                confidence=_clamp(raw.confidence, lo, hi, default_conf)
+            )
+        if isinstance(raw, dict):
+            val = str(raw.get("value", "")).strip()
+            conf = raw.get("confidence", default_conf)
+        else:
+            val = str(raw).strip()
+            conf = default_conf
+        try:
+            conf_f = float(conf)
+        except Exception:
+            conf_f = default_conf
+        result = cls(value=val, confidence=_clamp(conf_f, lo, hi, default_conf))
+        print(f"Created FieldWithConfidence: {result}")  # Debugging
+        return result
+
+def _clamp(v: float, lo: float, hi: float, fallback: float) -> float:
+    if not (lo <= v <= hi):
+        return fallback
+    return v
+
+class FlatExtractionResult(BaseModel):
+    """Normalized extraction payload returned to API clients.
+
+    doc_type      : Free-form string describing detected document class (may be None if uncertain).
+    fields        : Canonical keys present on the document -> FieldWithConfidence (or legacy plain string).
+    extra_fields  : Non-canonical but useful labeled values -> FieldWithConfidence (or legacy plain string).
+
+    Backward compatibility: accepts plain string values so historical callers
+    that haven't normalized yet won't break; internal code should migrate to
+    FieldWithConfidence for richer downstream analytics.
+    """
+
     doc_type: Optional[str] = None
-    fields: Dict[str, str]
-    extra_fields: Dict[str, str] = Field(default_factory=dict)
+    fields: Dict[str, Union[str, FieldWithConfidence]] = Field(default_factory=dict)
+    extra_fields: Dict[str, Union[str, FieldWithConfidence]] = Field(default_factory=dict)
+    # Legacy confidence maps retained (commented) for possible reintroduction:
     # fields_confidence: Dict[str, float] = Field(default_factory=dict)
     # extra_fields_confidence: Dict[str, float] = Field(default_factory=dict)
 
+# class FlatExtractionResult(BaseModel):  # simplified output for single document
+#     """Return shape including confidence maps (now always provided).
+
+#     fields / extra_fields map field_name -> string value.
+#     fields_confidence / extra_fields_confidence map field_name -> float confidence 0..1.
+#     """
+#     doc_type: Optional[str] = None
+#     fields: Dict[str, str]
+#     extra_fields: Dict[str, str] = Field(default_factory=dict)
+#     fields_confidence: Dict[str, float] = Field(default_factory=dict)
+#     extra_fields_confidence: Dict[str, float] = Field(default_factory=dict)
+
 
 class ErrorEnvelope(BaseModel):  # consistent error body (unused for success)
-    """Uniform error body returned on failure."""
+    """Uniform error body returned on failure.
+
+    error: {"code": string, "message": string} (code optional depending on caller).
+    """
 
     error: Dict[str, str]

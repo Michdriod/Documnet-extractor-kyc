@@ -1,7 +1,12 @@
 """Model client abstraction layer.
 
-Hides underlying provider specifics (currently Groq) and exposes
-simple .run(prompt, images) returning dict with raw output + timing.
+Extended description:
+        * Encapsulates provider/model setup (currently Groq) so swapping vendors
+            only touches this file.
+        * Exposes a single async API (VisionExtractor.run) returning a dict that
+            contains the parsed RawExtraction object + timing + raw assistant text.
+        * Adds salvage heuristics for empty structured outputs to improve resilience.
+        * Maintains backwards-compatible commented sections for historical context.
 """
 
 from typing import List, Dict, Any, Optional
@@ -20,10 +25,16 @@ from pydantic_ai.providers.groq import GroqProvider
 
 
 
-system_prompt=SYSTEM_PROMPT_BASE  # Base system instructions reused
+system_prompt=SYSTEM_PROMPT_BASE  # Base system instructions reused (legacy variable; may be overridden later)
 
 class RawExtraction(BaseModel):
-    """Loose model for initial LLM JSON prior to normalization."""
+    """Loose model for initial LLM JSON prior to normalization.
+
+    Rationale:
+        The first pass from the model may vary (scalars vs objects). We keep
+        field value types permissive (Any) and rely on a downstream normalizer
+        to coerce into FieldWithConfidence objects required by API outputs.
+    """
 
     doc_type: str | None = None
     fields: Dict[str, Any] = Field(default_factory=dict)
@@ -33,37 +44,39 @@ class RawExtraction(BaseModel):
 
 
 class VisionExtractor:
-    """Wrap a pydantic-ai Agent with fixed model + dynamic prompt usage.
+    """High-level orchestrator for single-call vision extraction.
 
-    Updated: user prompt text is no longer sent as a separate chat message. If a
-    (system_prompt, description) tuple is provided, the second element becomes
-    the `description` passed into PromptedOutput so it influences the model's
-    understanding of the desired structure without adding another user turn.
+    Key points:
+        - Centralizes model construction + logging.
+        - Accepts either a raw system prompt string or (prompt, description) tuple.
+        - Leverages pydantic-ai's PromptedOutput to parse JSON directly into
+          the RawExtraction pydantic model (strongly-typed output).
+        - Minimizes chat turns by embedding all guidance in the system prompt.
     """
 
     DEFAULT_DESCRIPTION = (
         "Return JSON with keys: doc_type (string), fields (object of visible canonical field values), "
         "extra_fields (object for any other visible labeled values)."
     )
-    
-    
-    description= DEFAULT_DESCRIPTION
-    
-    # USER_PROMPT_BASE = """ACCURATE DOCUMENT EXTRACTION FROM IMAGE:
 
+    description = DEFAULT_DESCRIPTION  # Default structural description (can be overridden)
+
+    # USER_PROMPT_BASE (historical, retained for context):
+    # """ACCURATE DOCUMENT EXTRACTION FROM IMAGE:
+    #
     # Analyze the provided document images and extract ONLY information that is explicitly visible.
     # Follow anti-hallucination protocol strictly. If a value cannot be verified, omit it.
     # Return ONLY valid JSON (no text before or after).""".strip()
-    
-    
-    
+    # This guidance is now integrated into SYSTEM_PROMPT_BASE.
 
     def __init__(self):
+        # OpenAI/Ollama alternative path (commented; enables quick provider swap):
         # self.settings = get_settings()
         # self.model = OpenAIChatModel(
         #     model_name=self.settings.VISION_MODEL,
         #     provider=OpenAIProvider(base_url=f"{self.settings.OLLAMA_BASE_URL}/v1"),
         # )
+        # Keeping this commented block documents how to pivot to a local gateway.
 
         self.settings = get_settings()
         groq_key = self.settings.GROQ_API_KEY
@@ -76,10 +89,14 @@ class VisionExtractor:
             )
         except Exception as e:
             raise RuntimeError(f"Failed to initialize Groq provider: {e}") from e
-        
 
     def build_agent(self, system_prompt: str, description: str | None = None) -> Agent:
-        """Instantiate an agent with the system prompt and optional description."""
+        """Instantiate an agent with the system prompt and optional description.
+
+        Description (if provided) is stored in the output metadata and can help
+        the model reason about desired JSON structure without adding another
+        chat message turn.
+        """
         if self.settings.DEBUG_EXTRACTION:
             logging.getLogger("kyc.extract").debug(
                 "agent_build system_prompt_preview=%s desc_preview=%s",
@@ -87,7 +104,6 @@ class VisionExtractor:
                 (description or self.DEFAULT_DESCRIPTION)[:160].replace('\n', ' '),
             )
 
-        
         return Agent(
             self.model,
             instructions=system_prompt,
@@ -122,17 +138,17 @@ class VisionExtractor:
                 bool(description),
             )
             # Heuristic: warn early if model name unlikely vision-capable
-            if all(tok not in self.settings.VISION_MODEL.lower() for tok in ["llava", "vision", "clip", "mm", "multi", "pix", "phi-3-vision", "llama", "gemma3:4b", "minicpm-v:latest"]):
+            if all(tok not in self.settings.VISION_MODEL.lower() for tok in ["llava", "vision", "clip", "mm", "multi", "pix", "phi-3-vision", "llama", "gemma3:4b", "minicpm-v:latest", "minicpm-v"]):
                 log.warning("model_name_may_not_be_vision_capable model=%s", self.settings.VISION_MODEL)
         agent = self.build_agent(system_prompt, description)
-        inputs: List[Any] = []  # Ordered binary contents
-        # Only images now; no separate user text message.
+        inputs: List[Any] = []  # Ordered binary contents to agent
+        # Only images now; all textual guidance lives in the system prompt.
         for img in images:
             inputs.append(BinaryContent(data=img, media_type="image/png"))
         t0 = time.time()
         try:
             result = await agent.run(inputs)
-            print(result.output)
+            print(result.output)  # stdout debug (retained intentionally; can convert to logger)
         except Exception as e:
             log.error("model_run_exception error=%s", e, exc_info=True)
             raise
@@ -140,7 +156,7 @@ class VisionExtractor:
         raw_obj = result.output
         raw_text = None
         model_message_text = None
-        # Some pydantic-ai versions expose the raw text via result.raw_response / result.messages; attempt to pull for debugging.
+        # Attempt to recover raw assistant text for debugging (version-dependent attributes).
         try:
             if hasattr(result, 'raw_response'):
                 raw_text = getattr(result, 'raw_response', None)
@@ -191,7 +207,7 @@ class VisionExtractor:
             log.warning(
                 "model_run_empty_fields model=%s latency_ms=%d", self.settings.VISION_MODEL, latency_ms
             )
-            # Attempt naive salvage from raw_text if present
+            # Attempt naive salvage from raw_text if present (best effort; avoids silent empty responses)
             salvage = {}
             if raw_text and isinstance(raw_text, str):
                 import re

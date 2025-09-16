@@ -1,8 +1,29 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException  # multi-source endpoint
+"""FastAPI router for multi-page / multi-document extraction endpoint.
+
+Endpoint: POST /extract/vision/multi
+
+Accepted sources (exactly one required):
+    * file (UploadFile) – PDF or image containing one or more logical documents.
+    * source_url (remote HTTP/HTTPS) – downloaded and processed similarly.
+    * file_path (server-local) – restricted; assumes trusted internal path usage.
+
+Response model consolidates consecutive pages with a shared (or inferred) doc_type
+into grouped MultiPageDoc entries. Field values are merged with a first-win policy.
+
+Error handling philosophy:
+    * 400 for client-side / fetch issues (bad URL, not found, multiple sources).
+    * 500 for unexpected internal failures in extraction or rendering.
+    * Specific marker 'pdf_support_requires_pymupdf' when PyMuPDF is missing.
+
+No functional changes made; only documentation and clarifying comments added.
+"""
+
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query  # multi-source endpoint
 import httpx
 from pathlib import Path
 from app.multidoc.extractor import extract_multi_document
 from app.multidoc.multi_schemas import MultiExtractionResult
+from app.extraction.norm_helper import normalize
 
 router_multi = APIRouter()
 
@@ -42,7 +63,8 @@ async def extract_multi(
         raise HTTPException(status_code=400, detail=f"load_error:{e}")
 
     try:
-        return await extract_multi_document(filename, data)
+        result = await extract_multi_document(filename, data)
+        return result
     except RuntimeError as re:
         if "pymupdf_not_installed" in str(re):
             raise HTTPException(status_code=400, detail="pdf_support_requires_pymupdf")

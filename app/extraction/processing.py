@@ -1,4 +1,20 @@
-"""Core extraction helpers: file validation, PDF rendering, normalization, scoring."""
+"""Core extraction helpers: file validation, PDF rendering, normalization, scoring.
+
+Overview:
+    These functions are stateless building blocks used by both the single-document
+    and multi-document pipelines. They intentionally avoid side effects so they
+    can be unit-tested in isolation and reused.
+
+Contents quick map:
+    generate_request_id      -> short hex correlation id
+    validate_source          -> extension + size guard
+    render_pdf_pages         -> limited page rasterization (PNG bytes)
+    ensure_image_format      -> canonicalize image to PNG (RGB)
+    normalize_value          -> key-aware string canonicalization
+    score_field              -> lightweight heuristic confidence
+    assemble_field_objects   -> construct {value, confidence} objects
+    compute_missing          -> legacy stub (returns empty list)
+"""
 
 import io
 import fitz  # PyMuPDF
@@ -8,17 +24,19 @@ from typing import List, Tuple, Dict, Any
 from app.core.config import get_settings  # Central settings
 from PIL import Image
 
-ALLOWED_EXT = {"pdf", "jpg", "jpeg", "png", "webp"}  # Supported file extensions
+
+ALLOWED_EXT = {"pdf", "jpg", "jpeg", "png", "webp"}  # Supported file extensions (expand cautiously: more types => security surface)
 DATE_RX = re.compile(r"^(19|20)\d{2}[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])$")  # Strict YYYY-MM-DD or YYYY/MM/DD
-MRZ_RX = re.compile(r"^[A-Z0-9<]{20,}$")  # Coarse MRZ line: long, allowed chars
-ID_RX = re.compile(r"^[A-Z0-9]{5,}$")  # Generic doc/ID token
-NON_ALNUM_RX = re.compile(r"[^A-Z0-9<]")  # Strip disallowed MRZ chars
+MRZ_RX = re.compile(r"^[A-Z0-9<]{20,}$")  # Coarse MRZ line: length + charset filter (not a checksum validator)
+ID_RX = re.compile(r"^[A-Z0-9]{5,}$")  # Generic uppercase identifier heuristic (len >= 5)
+NON_ALNUM_RX = re.compile(r"[^A-Z0-9<]")  # Characters disallowed in MRZ (retain '<' fillers)
 
 def generate_request_id() -> str:
     """Return a random hex string for correlation in logs/responses."""
     return uuid.uuid4().hex
 
 def extension_from_filename(filename: str) -> str:
+    """Return file extension (lowercase, no dot) or empty string if none."""
     return filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
 
 
@@ -47,14 +65,14 @@ def render_pdf_pages(data: bytes) -> Tuple[List[bytes], bool]:
     MAX_PAGES_RENDER limit is exceeded.
     """
     settings = get_settings()
-    doc = fitz.open(stream=data, filetype="pdf")
+    doc = fitz.open(stream=data, filetype="pdf")  # in-memory open (avoid temp files)
     images: List[bytes] = []
     truncated = False
     for i, page in enumerate(doc):
         if i >= settings.MAX_PAGES_RENDER:
             truncated = True
             break
-    # 180dpi: balance between clarity and speed
+    # 180dpi: balance between clarity and speed (adjust if model under-reads small text)
         pix = page.get_pixmap(dpi=180)
         images.append(pix.tobytes("png"))
     return images, truncated
@@ -62,7 +80,7 @@ def render_pdf_pages(data: bytes) -> Tuple[List[bytes], bool]:
 
 def ensure_image_format(data: bytes) -> bytes:
     """Normalize an image blob to PNG (RGB) to reduce model variability."""
-    with Image.open(io.BytesIO(data)) as im:
+    with Image.open(io.BytesIO(data)) as im:  # Pillow auto-detects format
         out = io.BytesIO()
         im.convert("RGB").save(out, format="PNG")
         return out.getvalue()
@@ -87,11 +105,11 @@ def normalize_value(key: str, value: str) -> str:
         return ""
     if key in {"nationality", "issuing_country", "sex"}:
         v = v.upper()
-    if key in {"passport_number", "national_id_number", "document_number", "nin"}:
+    if key in {"passport_number", "national_id_number", "document_number", "nin"}:  # collapse whitespace/dashes for IDs
         v = re.sub(r"[\s-]", "", v.upper())
     if key.startswith("mrz_line"):
         v = NON_ALNUM_RX.sub("", v.upper())
-    if re.match(r"^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$", v):  # Flexible 1-2 digit month/day
+    if re.match(r"^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$", v):  # Flexible 1-2 digit month/day -> zero-pad
         y, m, d = re.split(r"[/-]", v)
         v = f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
     return v
@@ -101,13 +119,13 @@ def score_field(key: str, value: str) -> float:
     """Heuristic confidence score (0..1) for a normalized value."""
     if not value:
         return 0.0
-    score = 0.70
+    score = 0.70  # baseline prior
     if DATE_RX.match(value):
         score += 0.10
     if key.startswith("mrz_line") and MRZ_RX.match(value):
         score += 0.15
     if key in {"passport_number", "national_id_number", "document_number", "nin"}:
-        if ID_RX.match(value):
+        if ID_RX.match(value):  # plausible uppercase alphanumeric sequence
             score += 0.10
         else:
             score -= 0.15
@@ -118,7 +136,7 @@ def score_field(key: str, value: str) -> float:
 
 def assemble_field_objects(raw: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
     """Convert a raw key->value mapping to value+confidence dict objects."""
-    out: Dict[str, Dict[str, Any]] = {}
+    out: Dict[str, Dict[str, Any]] = {}  # field_name -> {value, confidence}
     for k, v in raw.items():
         if v is None:
             continue
