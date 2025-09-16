@@ -19,6 +19,7 @@ No functional changes made; only documentation and clarifying comments added.
 """
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query  # multi-source endpoint
+import logging
 import httpx
 from pathlib import Path
 from app.multidoc.extractor import extract_multi_document
@@ -26,6 +27,7 @@ from app.multidoc.multi_schemas import MultiExtractionResult
 from app.extraction.norm_helper import normalize
 
 router_multi = APIRouter()
+log = logging.getLogger("kyc.multi")
 
 @router_multi.post(
     "/extract/vision/multi",
@@ -45,18 +47,21 @@ async def extract_multi(
         if file:
             filename = file.filename or "upload"
             data = await file.read()
+            log.debug("multi_input mode=file name=%s size=%d", filename, len(data))
         elif source_url:
             async with httpx.AsyncClient(timeout=45) as client:
                 r = await client.get(source_url)
                 r.raise_for_status()
                 data = r.content
             filename = source_url.split("?")[0].split("/")[-1] or "remote"
+            log.debug("multi_input mode=source_url url=%s size=%d", source_url, len(data))
         else:
             p = Path(file_path).expanduser().resolve()
             if not p.exists() or not p.is_file():
                 raise HTTPException(status_code=400, detail="file_path_not_found")
             filename = p.name
             data = p.read_bytes()
+            log.debug("multi_input mode=file_path path=%s size=%d", p, len(data))
     except HTTPException:
         raise
     except Exception as e:
@@ -64,6 +69,7 @@ async def extract_multi(
 
     try:
         result = await extract_multi_document(filename, data)
+        log.debug("multi_extracted groups=%d pages=%d elapsed_ms=%s", len(result.documents), result.meta.total_pages, result.meta.elapsed_ms)
         return result
     except RuntimeError as re:
         if "pymupdf_not_installed" in str(re):

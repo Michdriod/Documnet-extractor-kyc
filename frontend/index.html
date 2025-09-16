@@ -25,18 +25,26 @@
         </div>
       </div>
       <div class="field-group" id="fileGroup">
-        <label for="fileInput">Document (PDF / Image)</label>
-        <input id="fileInput" name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" />
+        <label>Document Files (PDF / Image)</label>
+        <div id="fileInputsWrap" class="stacked-inputs">
+          <div class="dyn-input"><input type="file" name="files" accept=".pdf,.png,.jpg,.jpeg,.webp" /></div>
+        </div>
+        <button type="button" id="addFileBtn" class="mini-btn">+ Add another file</button>
+        <small class="hint">Add multiple separate file boxes. Leave unused boxes empty.</small>
       </div>
       <div class="field-group hidden" id="urlGroup">
-        <label for="sourceUrl">Source URL (PDF / Image)</label>
-        <input id="sourceUrl" name="source_url" type="url" placeholder="https://example.com/doc.pdf" />
+        <label>Source URL(s)</label>
+        <div id="urlInputsWrap" class="stacked-inputs">
+          <div class="dyn-input"><input type="url" name="source_urls" placeholder="https://example.com/doc1.pdf" /></div>
+        </div>
+        <button type="button" id="addUrlBtn" class="mini-btn">+ Add another URL</button>
+        <small class="hint">Each URL has its own box. Empty boxes are ignored.</small>
       </div>
       <div class="field-inline">
         <label for="docType">Doc Type (optional)</label>
         <input id="docType" name="doc_type" placeholder="passport, national_id, ..." />
       </div>
-      <small class="hint">Provide either a file or a URL (mutually exclusive).</small>
+  <small class="hint">Provide either files or URLs (mutually exclusive). Use the + buttons to add more.</small>
       <button id="submitBtn" type="submit">Extract</button>
     </form>
 

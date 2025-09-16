@@ -13,14 +13,14 @@ High-level flow:
 Note: All original code preserved; only explanatory comments added per request.
 """
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form, Query
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form
+from typing import List
 import httpx  # HTTP client for URL source fetch
 from app.extraction.schemas import ErrorEnvelope, CanonicalFields, FlatExtractionResult
 from app.extraction.processing import (
     validate_source,
     render_pdf_pages,
     ensure_image_format,
-    assemble_field_objects,
     generate_request_id,
 )
 from app.extraction.prompts import build_prompt
@@ -29,6 +29,7 @@ from app.core.config import get_settings
 from app.extraction.norm_helper import normalize
 import traceback
 import logging
+import asyncio
 
 # One-time httpx debug activation guard
 _HTTPX_DEBUG_ENABLED = False
@@ -39,7 +40,7 @@ router = APIRouter()
 
 @router.post(
     "/extract/vision/single",
-    response_model=FlatExtractionResult,
+    response_model=List[FlatExtractionResult],  # Always return a list (single-file -> list of one)
     responses={
         400: {"model": ErrorEnvelope},  # Validation / client errors
         500: {"model": ErrorEnvelope},  # Internal unexpected failures
@@ -47,193 +48,188 @@ router = APIRouter()
     },
 )
 async def extract_single(
-    file: UploadFile | None = File(None, description="Single image or PDF file"),
-    source_url: str | None = Form(None, description="HTTP/HTTPS URL to a single PDF or image"),
+    files: List[UploadFile] = File(None, description="One or more image/PDF files (field name 'files')"),
+    file: UploadFile | None = File(None, description="Backward compatible single file field 'file'"),
+    source_url: str | None = Form(None, description="HTTP/HTTPS URL to a single PDF or image (legacy single)"),
+    source_urls: List[str] | None = Form(None, description="Multiple HTTP/HTTPS URLs (repeat field)"),
     doc_type: str | None = Form(None),
     settings=Depends(get_settings),
 ):
-    """Single fast extraction call. Exactly one of (file | source_url)."""
-    request_id = generate_request_id()  # Unique trace id for correlating logs
-    try:
-        # --- Validate mutual exclusivity of input sources ---
-        if (file is None and not source_url) or (file is not None and source_url):
-            raise HTTPException(status_code=400, detail="provide_exactly_one_source")
+    """Concurrent extraction for one or more files (or exactly one remote URL).
 
-        source_kind = "upload" if file else "url"  # label for logging
-        filename = "uploaded"
-        data: bytes
+    Returns a list of normalized FlatExtractionResult objects. For backward
+    compatibility, clients that previously received a single object will now
+    receive a single-item list.
+    """
+    base_request_id = generate_request_id()
 
-        if file is not None:  # Branch: direct file upload path
-            # --- Read uploaded file bytes ---
-            filename = file.filename or filename
-            data = await file.read()
-        else:  # Branch: remote URL path
-            # --- Stream download remote file (size-guarded) ---
-            url = source_url.strip()
-            if not (url.startswith("http://") or url.startswith("https://")):
-                raise HTTPException(status_code=400, detail="invalid_url_scheme")
+    # Merge legacy single file param into files list if provided
+    if file is not None:
+        if files:
+            files.append(file)
+        else:
+            files = [file]
+
+    # --- Validate exclusivity (treat empty list as no files) ---
+    has_files = bool(files and any(f is not None for f in files))
+    # Normalize multi URLs list (filter empties/whitespace)
+    clean_multi_urls = []
+    if source_urls:
+        for u in source_urls:
+            if u and u.strip():
+                clean_multi_urls.append(u.strip())
+    has_multi_urls = len(clean_multi_urls) > 0
+    has_single_url = bool(source_url)
+
+    # Exclusivity: exactly one of (files, single_url, multi_urls)
+    used = sum([1 if has_files else 0, 1 if has_single_url else 0, 1 if has_multi_urls else 0])
+    if used != 1:
+        raise HTTPException(status_code=400, detail="provide_exactly_one_source_variant")
+
+    # Enable verbose httpx logging once per process when debugging (shared across tasks)
+    global _HTTPX_DEBUG_ENABLED
+    if settings.DEBUG_EXTRACTION and not _HTTPX_DEBUG_ENABLED:
+        try:
+            httpx_logger = logging.getLogger("httpx")
+            httpx_logger.setLevel(logging.DEBUG)
+            if not httpx_logger.handlers:
+                httpx_logger.propagate = True
+            logger.debug("httpx_debug_logging_enabled request_id=%s", base_request_id)
+            _HTTPX_DEBUG_ENABLED = True
+        except Exception:
+            logger.debug("httpx_debug_enable_failed request_id=%s", base_request_id)
+
+    allowed_keys = [k for k in CanonicalFields.model_fields.keys()]
+
+    async def fetch_remote(url: str) -> tuple[str, bytes]:
+        """Download remote file into memory with size guard."""
+        if not (url.startswith("http://") or url.startswith("https://")):
+            raise HTTPException(status_code=400, detail="invalid_url_scheme")
+        try:
+            max_bytes = settings.MAX_FILE_MB * 1024 * 1024
+            async with httpx.AsyncClient(timeout=30) as client:
+                async with client.stream("GET", url) as resp:
+                    if resp.status_code != 200:
+                        raise HTTPException(status_code=400, detail="url_fetch_error")
+                    filename = url.rsplit("/", 1)[-1] or "downloaded"
+                    if "." not in filename:  # Derive basic extension from content-type
+                        ctype = resp.headers.get("content-type", "").lower()
+                        if "pdf" in ctype:
+                            filename += ".pdf"
+                        elif any(t in ctype for t in ["jpeg", "jpg"]):
+                            filename += ".jpg"
+                        elif "png" in ctype:
+                            filename += ".png"
+                        elif "webp" in ctype:
+                            filename += ".webp"
+                    chunks = []
+                    total = 0
+                    async for chunk in resp.aiter_bytes():
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise HTTPException(status_code=400, detail="url_too_large")
+                        chunks.append(chunk)
+                    return filename, b"".join(chunks)
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=400, detail="url_fetch_error")
+
+    async def process_file(upload_filename: str, raw_bytes: bytes, idx: int) -> FlatExtractionResult:
+        """Full pipeline for a single file -> normalized extraction result."""
+        request_id = f"{base_request_id}-{idx}"
+        try:
+            # Validate + possibly mutate bytes (ext inference)
             try:
-                max_bytes = settings.MAX_FILE_MB * 1024 * 1024
-                async with httpx.AsyncClient(timeout=30) as client:
-                    async with client.stream("GET", url) as resp:
-                        if resp.status_code != 200:
-                            raise HTTPException(status_code=400, detail="url_fetch_error")
-                        filename = url.rsplit("/", 1)[-1] or "downloaded"
-                        # Basic derive extension from content-type if missing
-                        if "." not in filename:
-                            ctype = resp.headers.get("content-type", "").lower()
-                            if "pdf" in ctype:
-                                filename += ".pdf"
-                            elif "jpeg" in ctype or "jpg" in ctype:
-                                filename += ".jpg"
-                            elif "png" in ctype:
-                                filename += ".png"
-                            elif "webp" in ctype:
-                                filename += ".webp"
-                        chunks = []
-                        total = 0
-                        async for chunk in resp.aiter_bytes():
-                            total += len(chunk)
-                            if total > max_bytes:
-                                raise HTTPException(status_code=400, detail="url_too_large")
-                            chunks.append(chunk)
-                        data = b"".join(chunks)
+                ext, data = validate_source(upload_filename, raw_bytes)
+            except ValueError as ve:
+                raise HTTPException(status_code=400, detail=str(ve))
+
+            # Render pages
+            try:
+                if ext == "pdf":
+                    pages, truncated = render_pdf_pages(data)
+                else:
+                    pages = [ensure_image_format(data)]
+                    truncated = False
             except HTTPException:
                 raise
             except Exception:
-                raise HTTPException(status_code=400, detail="url_fetch_error")
+                raise HTTPException(status_code=400, detail="render_error")
 
-        # --- File extension + size validation (ensures supported type & within limits) ---
-        try:
-            ext, data = validate_source(filename, data)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-
-        truncated = False
-        pages = []
-        if ext == "pdf":  # PDF -> rasterize limited number of pages (config bound)
-            # --- Rasterize limited PDF pages ---
-            try:
-                pages, truncated = render_pdf_pages(data)
-            except Exception:
-                raise HTTPException(status_code=400, detail="pdf_render_error")
-        else:  # Image -> ensure consistent format (PNG) for model ingestion
-            try:
-                # --- Normalize image -> PNG for consistent model input ---
-                pages = [ensure_image_format(data)]
-            except Exception:
-                raise HTTPException(status_code=400, detail="invalid_image")
-
-        allowed_keys = [k for k in CanonicalFields.model_fields.keys()]  # Canonical schema keys for prompt enumeration
-        # Log page sizes before model call for debugging empty extraction issues
-        if settings.DEBUG_EXTRACTION:  # Optional diagnostics: page sizes + counts
-            try:
-                if pages:
+            if settings.DEBUG_EXTRACTION:
+                try:
                     logger.debug(
-                        "image_pages_count=%d first_page_size_bytes=%d all_page_sizes=%s request_id=%s",
-                        len(pages),
-                        len(pages[0]),
-                        [len(p) for p in pages],
+                        "pre_model_metrics request_id=%s filename=%s pages=%d page_sizes=%s truncated=%s",
                         request_id,
+                        upload_filename,
+                        len(pages),
+                        [len(p) for p in pages],
+                        truncated,
                     )
-                else:
-                    logger.debug("no_pages_after_preprocess request_id=%s", request_id)
-            except Exception:
-                logger.debug("page_size_logging_failed request_id=%s", request_id)
+                except Exception:
+                    logger.debug("metrics_logging_failed request_id=%s", request_id)
 
-        # Enable verbose httpx logging once per process when debugging
-        global _HTTPX_DEBUG_ENABLED  # Module-level guard avoids repeated logger setup
-        if settings.DEBUG_EXTRACTION and not _HTTPX_DEBUG_ENABLED:
-            try:
-                httpx_logger = logging.getLogger("httpx")
-                httpx_logger.setLevel(logging.DEBUG)
-                if not httpx_logger.handlers:
-                    # Inherit root handlers; ensure propagation
-                    httpx_logger.propagate = True
-                logger.debug("httpx_debug_logging_enabled request_id=%s", request_id)
-                _HTTPX_DEBUG_ENABLED = True
-            except Exception:
-                logger.debug("httpx_debug_enable_failed request_id=%s", request_id)
-
-        # Build single system prompt
-        system_prompt = build_prompt(doc_type, allowed_keys, require_conf=settings.REQUIRE_CONFIDENCE)  # Adaptive (confidence) prompt
-        if settings.DEBUG_EXTRACTION:
-            try:
+            system_prompt = build_prompt(doc_type, allowed_keys, require_conf=settings.REQUIRE_CONFIDENCE)
+            if settings.DEBUG_EXTRACTION:
                 logger.debug(
-                    "prompt_used request_id=%s doc_type=%s system_len=%d",
+                    "prompt_used request_id=%s filename=%s len=%d doc_type=%s",
                     request_id,
-                    doc_type,
+                    upload_filename,
                     len(system_prompt),
+                    doc_type,
                 )
-            except Exception:
-                logger.debug("prompt_used request_id=%s doc_type=%s", request_id, doc_type)
 
-        # Quick heuristic warning if model likely not vision-capable by name pattern
-        if settings.DEBUG_EXTRACTION and all(tok not in settings.VISION_MODEL.lower() for tok in ["llava", "vision", "v", "mm"]):  # Simple heuristic to warn if model may not be vision-capable
-            logger.debug("model_name_may_not_be_vision request_id=%s model=%s", request_id, settings.VISION_MODEL)
+            # Model call
+            try:
+                model_result = await vision_extractor.run(system_prompt, pages)
+            except Exception as exc:
+                logger.warning("model_inference_error request_id=%s error=%s", request_id, exc)
+                raise HTTPException(status_code=502, detail="model_inference_error")
 
-        try:  # Model inference (vision agent run)
-            # Provide tuple (system, description) only for description injection, not as a user message
-            model_result = await vision_extractor.run(system_prompt, pages)  # Vision model call
-            print(model_result)
-        except Exception as model_exc:
-            logger.warning("model_inference_error request_id=%s error=%s", request_id, model_exc)
-            raise HTTPException(status_code=502, detail="model_inference_error")
+            raw = model_result.get("raw") or {}
+            normalized = normalize(raw)
 
-        raw = model_result.get("raw") or {}  # Model parsed output object (RawExtraction or dict-like)
-        normalized = normalize(raw)  # Convert to FlatExtractionResult shape with value+confidence objects
-        print(normalized)
-        if not getattr(raw, 'fields', None) and model_result.get('raw_text'):
-            logger.debug("empty_fields_raw_text request_id=%s raw_text=%s", request_id, model_result['raw_text'])
-        raw_fields = raw.fields if hasattr(raw, 'fields') else getattr(raw, 'fields', {})  # Defensive attribute access
-        raw_extra = raw.extra_fields if hasattr(raw, 'extra_fields') else getattr(raw, 'extra_fields', {})
-        inferred_type = getattr(raw, 'doc_type', None) or doc_type  # Use model inference fallback
+            logger.info(
+                "extraction_success request_id=%s filename=%s pages=%d doc_type=%s latency_ms=%s confidence=always",
+                request_id,
+                upload_filename,
+                len(pages),
+                normalized.doc_type,
+                model_result.get("latency_ms"),
+            )
+            return normalized
+        except HTTPException:
+            raise
+        except Exception:
+            traceback.print_exc()
+            logger.exception("internal_error_single request_id=%s", request_id)
+            raise HTTPException(status_code=500, detail="internal_error")
 
-        norm_fields = assemble_field_objects(raw_fields)  # Legacy flattened assembly retained (may deprecate later)
-        norm_extra = assemble_field_objects(raw_extra)
+    # --- Remote URL single path (wrap into list for unified return) ---
+    if source_url:
+        filename, data = await fetch_remote(source_url.strip())
+        result = await process_file(filename, data, 0)
+        return [result]
 
-        # Dynamic accumulation of seen doc types (simple in-memory; could persist later)
-        if not hasattr(extract_single, "_doc_types_seen"):  # Simple in-memory tracking of seen doc types
-            setattr(extract_single, "_doc_types_seen", set())
-        if inferred_type:  # Record current inferred/declared type for potential analytics
-            extract_single._doc_types_seen.add(inferred_type)  # type: ignore[attr-defined]
+    if clean_multi_urls:
+        # Fetch all concurrently then process each
+        async def fetch_and_process(idx_url: tuple[int, str]):
+            idx, url = idx_url
+            fname, bytes_ = await fetch_remote(url)
+            return await process_file(fname, bytes_, idx)
+        results = await asyncio.gather(*[fetch_and_process(t) for t in enumerate(clean_multi_urls)])
+        return list(results)
 
-        # Always include confidence maps now
-        def flatten(d: dict) -> dict:  # Backward-compat helper (string-only mapping)
-            out = {}
-            for k, v in d.items():
-                if isinstance(v, dict):  # FieldWithConfidence-like object
-                    val = v.get("value")
-                else:
-                    val = v
-                if val is not None and val != "":  # Skip empty / null
-                    out[k] = val
-            return out
+    # --- Multi upload path ---
+    tasks = []
+    for idx, upload in enumerate(files):
+        if upload is None:
+            continue
+        fname = upload.filename or f"upload_{idx}"
+        raw_bytes = await upload.read()
+        tasks.append(process_file(fname, raw_bytes, idx))
 
-        resp = normalized       # Directly return normalized structured result (includes confidence)
-        # FlatExtractionResult(
-        #     doc_type=inferred_type,
-        #     fields=flatten(norm_fields),
-        #     extra_fields=flatten(norm_extra),
-        #     fields_confidence={k: v.get("confidence") for k, v in norm_fields.items()},
-        #     extra_fields_confidence={k: v.get("confidence") for k, v in norm_extra.items()},
-        # )
-        logger.info(  # Success summary log line (stable for log aggregation)
-            "extraction_success request_id=%s source_kind=%s filename=%s pages=%d doc_type=%s latency_ms=%s confidence=always",
-            request_id,
-            source_kind,
-            filename,
-            len(pages),
-            # inferred_type,
-            normalized.doc_type,
-            model_result.get("latency_ms"),
-        )
-        if model_result.get('raw_text'):  # Optional debug: snippet of raw text content
-            logger.debug("raw_model_text request_id=%s snippet=%s", request_id, str(model_result['raw_text'])[:500])
-        return resp
-    except HTTPException:
-        raise  # Known client / upstream errors
-    except Exception:
-        traceback.print_exc()  # Fallback console trace
-        logger.exception("internal_error request_id=%s", request_id)
-        raise HTTPException(status_code=500, detail="internal_error")
+    # Run concurrently
+    results = await asyncio.gather(*tasks)
+    return list(results)

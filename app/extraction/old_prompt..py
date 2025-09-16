@@ -15,35 +15,10 @@ manually so that future global adjustments propagate everywhere consistently.
 """
 from typing import List
 
-# Additional simplified guidance for lower-capability / smaller models.
-LOW_CAPABILITY_APPEND = """
-LOW-CAPABILITY MODE (SIMPLIFIED INSTRUCTIONS):
-Follow these very explicit steps in order. Do not add extra commentary.
-1. READ: Carefully read the entire image once.
-2. SCAN TEXT: List (internally) all clear text tokens you can truly see.
-3. MAP FIELDS: For each token or phrase, check if it matches an allowed canonical key meaning. If yes, assign it to that key. If not, use extra_fields with a short snake_case key you invent.
-4. AVOID GUESSING: If a part of a number / date / name is cut off or blurry, SKIP that field entirely.
-5. NO FABRICATION: Output nothing for data you cannot see.
-6. JSON SHAPE: Always output exactly:
-    {
-      "doc_type": <string or null>,
-      "fields": { <canonical_key>: {"value": <string>, "confidence": <float 0-1>} ... },
-      "extra_fields": { <non_canonical_key>: {"value": <string>, "confidence": <float 0-1>} ... }
-    }
-7. EMPTY CASE: If you find no text, output doc_type=null and both objects empty: {"doc_type": null, "fields": {}, "extra_fields": {}}.
-8. CONFIDENCE (if required):
-    - 0.95 perfect sharp text
-    - 0.75 minor blur
-    - 0.55 noticeable blur / partial obstruction
-    - 0.35 very hard to read (consider skipping instead)
-9. STAY STRICT: Use only allowed canonical keys list shown below; everything else goes to extra_fields.
-10. FINAL CHECK: Ensure valid JSON (no trailing commas, double quotes around keys, numbers not quoted unless part of a string value).
-""".strip()
-
 SYSTEM_PROMPT_BASE = """You are an expert document analyzer specialized in accurate extraction of structured data from any type of document.
 
 PRIMARY OBJECTIVE:
-Extract ONLY information EXPLICITLY VISIBLE while capturing EVERY clearly legible, semantically meaningful detail present on the page or document. Accuracy, COMPLETENESS (no valid visible field omitted), and NON‑HALLUCINATION are absolute priorities.
+Extract ONLY information EXPLICITLY VISIBLE. Accuracy and NON‑HALLUCINATION are absolute priorities.
 
 PHILOSOPHY:
 1. VERIFIED CAPTURE: Output only verifiable textual data.
@@ -56,7 +31,6 @@ STRICT EXTRACTION GUIDELINES:
 1. Extract ONLY what is visually present (text, numbers, codes, dates, labels).
 2. Do NOT infer missing parts (e.g. do not reconstruct cropped values).
 3. Use canonical keys only if the value clearly maps to that meaning.
-    3a. CANONICAL PRIORITY: If a visible value matches any canonical field meaning, you MUST place it under that canonical key (not extra_fields). Only values that have no suitable canonical key go into extra_fields.
 4. Structured groups (like Name/Number/Expiry) -> separate canonical fields where applicable.
 5. Multi-value blocks that cannot be cleanly split -> single extra_fields entry with a descriptive snake_case key.
 6. For each field prefer object form {"value":..., "confidence":...}. If confidence cannot be produced (weaker model mode) return just the string ONLY when instructed (flag controlled externally).
@@ -64,7 +38,6 @@ STRICT EXTRACTION GUIDELINES:
 8. Dates: keep original format EXACTLY as shown (do not normalize or reorder components).
 9. Numbers / IDs: preserve punctuation/spaces exactly (no reformatting of MRZ, passport, national IDs, serials).
 10. PER-IMAGE / PER-PAGE ISOLATION: Be strictly confined to the current document page or image. Never borrow, infer, carry over, or guess values from other pages, prior documents, memory, or assumed templates—only output what is explicitly visible in the present visual input.
-11. COMPLETENESS: For each individual page or logical document group, capture every clearly legible, semantically meaningful field/value that appears—do not skip valid visible data that fits either a canonical key or an extra_fields entry. Be thorough but NEVER speculate beyond what is actually present.
 
 CONFIDENCE CALIBRATION (WHEN USED):
 0.90–1.00: Sharp, fully legible.
@@ -101,7 +74,7 @@ QUALITY GUARDRAILS:
 * Trim leading/trailing whitespace inside values but keep interior spacing exactly.
 
 FINAL REMINDER:
-Precision AND completeness: do not fabricate, but also do not omit any clearly readable field/value that fits either a canonical key or belongs in extra_fields. Omit only when text is ambiguous or unreadable. All output must be valid JSON parsable without post-cleaning.
+Precision over recall. Omit uncertain data rather than guessing. All output must be valid JSON parsable without post-cleaning.
 """.strip()
 
 def build_prompt(doc_type: str | None, allowed_keys: List[str], require_conf: bool = True) -> str:
@@ -127,10 +100,8 @@ def build_prompt(doc_type: str | None, allowed_keys: List[str], require_conf: bo
         if require_conf else
         "Prefer objects {\"value\": <string>, \"confidence\": <float 0-1>}; if you cannot provide confidence, return just the string (do NOT invent)."
     )
-    # Low-capability guidance now always included to standardize behavior across models.
-    low_section = f"\n{LOW_CAPABILITY_APPEND}"
     return (
-        f"{SYSTEM_PROMPT_BASE}{low_section}\nAllowed canonical keys: [{allowed_list}]. {type_hint}\n"
+        f"{SYSTEM_PROMPT_BASE}\nAllowed canonical keys: [{allowed_list}]. {type_hint}\n"
         f"{conf_clause}\nReturn ONLY JSON with keys: doc_type, fields, extra_fields. "
         "If none present use empty objects. No commentary."
     )
