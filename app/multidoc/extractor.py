@@ -165,12 +165,13 @@ async def _extract_page(page_bytes: bytes, allowed_keys: List[str]) -> FlatExtra
     doc_type = getattr(raw, "doc_type", None)
     fields_raw = getattr(raw, "fields", {}) or {}
     extra_raw = getattr(raw, "extra_fields", {}) or {}
-    # fields = _normalize_field_map(fields_raw)
-    # extra = _normalize_field_map(extra_raw)
-    fields = {k: FieldWithConfidence(value=v.get("value"), confidence=v.get("confidence", settings.DEFAULT_CONFIDENCE))
-          for k, v in fields_raw.items()}
-    extra = {k: FieldWithConfidence(value=v.get("value"), confidence=v.get("confidence", settings.DEFAULT_CONFIDENCE))
-         for k, v in extra_raw.items()}
+    fields = (fields_raw)
+    extra = (extra_raw)
+ 
+    # fields = {k: FieldWithConfidence(value=v.get("value"), confidence=v.get("confidence", settings.DEFAULT_CONFIDENCE))
+    #       for k, v in fields_raw.items()}
+    # extra = {k: FieldWithConfidence(value=v.get("value"), confidence=v.get("confidence", settings.DEFAULT_CONFIDENCE))
+    #      for k, v in extra_raw.items()}
     return FlatExtractionResult(doc_type=doc_type, fields=fields, extra_fields=extra)
 
 def _smooth_doc_types(results: List[FlatExtractionResult]) -> List[Optional[str]]:
