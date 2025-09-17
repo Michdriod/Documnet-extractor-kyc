@@ -24,6 +24,13 @@
           <label><input type="radio" name="extractMode" value="multi"> Multi Doc</label>
         </div>
       </div>
+      <div class="field-inline" id="singleVariantGroup">
+        <label>Single Mode Type</label>
+        <div class="mode-switch">
+          <label><input type="radio" name="singleVariant" value="one" checked> ONE</label>
+          <label><input type="radio" name="singleVariant" value="batch"> BATCH</label>
+        </div>
+      </div>
       <div class="field-group" id="fileGroup">
         <label>Document Files (PDF / Image)</label>
         <div id="fileInputsWrap" class="stacked-inputs">
@@ -81,5 +88,14 @@
     </section>
   </div>
   <script src="/static/app.js"></script>
+  <script>
+    // Hide/show singleVariant group when multi selected
+    const extractRadios = document.querySelectorAll('input[name="extractMode"]');
+    const singleVariantGroup = document.getElementById('singleVariantGroup');
+    extractRadios.forEach(r => r.addEventListener('change', ()=>{
+      const val = document.querySelector('input[name="extractMode"]:checked').value;
+      if(val === 'multi') singleVariantGroup.style.display = 'none'; else singleVariantGroup.style.display='flex';
+    }));
+  </script>
 </body>
 </html>

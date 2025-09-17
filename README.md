@@ -32,7 +32,8 @@ Then open <http://localhost:8000/docs> for Swagger UI.
 
 | Capability | Current Behavior |
 |------------|------------------|
-| Batch single extraction | Multiple uploaded files (`files[]`) OR multiple URLs (`source_urls[]`) OR exactly one legacy `file` OR one `source_url`. Always returns `List[FlatExtractionResult]` (single input => length 1). |
+| One document extraction | Exactly ONE uploaded `file` OR ONE `url` using `/extract/vision/one`. Returns a single `FlatExtractionResult`. |
+| Batch extraction | Multiple uploaded `files[]` OR multiple `urls[]` (mutually exclusive) using `/extract/vision/batch`. Returns `List[FlatExtractionResult]`. |
 | Multi extraction | One multi‑page PDF / image -> groups consecutive pages into logical documents. |
 | Vision model wrapper | Single vision model (config `VISION_MODEL`) invoked once per page; concurrency via `asyncio.gather`. |
 | Canonical schema | Broad optional field superset (`CanonicalFields`). Only visibly present values appear. |
@@ -98,49 +99,81 @@ export VISION_MODEL=gemma3:4b
 ---
 ## 6. API Reference
 
-### 6.1 Single Document Endpoint (Batch Capable)
-`POST /extract/vision/single`
+### 6.1 ONE Document Endpoint
 
-Exactly one of these source variants must be provided:
+`POST /extract/vision/one`
 
-1. Multiple upload files: `files[]` (multipart, 1..N)
-2. Single legacy file: `file`
-3. Single remote URL: `source_url`
-4. Multiple remote URLs: repeated `source_urls[]`
+Supply exactly ONE source:
 
-Optional: `doc_type` (hint; model may still infer per page).
+- `file` (single PDF/image)
+- `url`  (single HTTP/HTTPS resource)
 
-Response: ALWAYS a JSON array of `FlatExtractionResult` objects.
+Optional: `doc_type`
 
-Field shape (each result):
-```json
-{
-  "doc_type": "passport",
-  "fields": {
-    "surname": {"value": "DOE", "confidence": 0.94},
-    "passport_number": {"value": "A1234567", "confidence": 0.91}
-  },
-  "extra_fields": {
-    "place_of_issue": {"value": "ABUJA", "confidence": 0.88}
-  }
-}
+Response: Single `FlatExtractionResult` object.
+
+Example (file):
+
+```bash
+curl -X POST http://localhost:8000/extract/vision/one \
+	-F file=@samples/passport_p1.jpg
 ```
 
-Example (multiple files):
+Example (URL):
+
 ```bash
-curl -X POST http://localhost:8000/extract/vision/single \
-  -F files=@samples/passport_p1.jpg \
-  -F files=@samples/passport_p2.jpg
+curl -X POST http://localhost:8000/extract/vision/one \
+	-F url=https://example.com/passport.jpg
+```
+
+### 6.2 BATCH Documents Endpoint
+
+`POST /extract/vision/batch`
+
+Provide EITHER multiple files OR multiple URLs (mutually exclusive):
+
+- `files` (repeat `-F files=@...` 1..N)
+- `urls`  (repeat `-F urls=...` 1..N)
+
+URL Input Normalization (server side):
+
+- You may also submit a single `urls` field containing a comma or newline separated list (e.g. `-F "urls=https://a.jpg, https://b.jpg"`).
+- Blank entries (accidental trailing commas / Swagger "Send empty value") are ignored.
+- Duplicate URLs are de-duplicated while preserving first occurrence order.
+- HTTP/HTTPS redirects are followed automatically.
+
+Constraints:
+
+- Cannot mix files and urls in the same request (409 error)
+- Max batch size: 20 (change `MAX_BATCH` in code)
+
+Response: JSON array of `FlatExtractionResult` objects. (Length == number of inputs.)
+
+Example (multiple files):
+
+```bash
+curl -X POST http://localhost:8000/extract/vision/batch \
+	-F files=@samples/passport_p1.jpg \
+	-F files=@samples/id_card_front.jpg
 ```
 
 Example (multiple URLs):
+
 ```bash
-curl -X POST http://localhost:8000/extract/vision/single \
-  -F source_urls=https://example.com/doc1.jpg \
-  -F source_urls=https://example.com/doc2.jpg
+curl -X POST http://localhost:8000/extract/vision/batch \
+	-F urls=https://example.com/doc1.jpg \
+	-F urls=https://example.com/doc2.jpg
 ```
 
-### 6.2 Multi Document Endpoint
+Example (single comma separated field):
+
+```bash
+curl -X POST http://localhost:8000/extract/vision/batch \
+	-F "urls=https://example.com/doc1.jpg, https://example.com/doc2.jpg, https://example.com/doc2.jpg"  # second doc2 deduped
+```
+
+### 6.3 Multi Document Endpoint
+
 `POST /extract/vision/multi`
 
 Parameters (Form / Multipart): choose exactly one:
@@ -150,6 +183,7 @@ Parameters (Form / Multipart): choose exactly one:
 - `file_path` (server‑local path; internal/trusted only)
 
 Response (simplified – confidence objects retained):
+
 ```json
 {
 	"documents": [
@@ -222,7 +256,7 @@ Current normalization (see `norm_helper.py`):
 ## 10. Logging & Debug
 
 With `DEBUG_EXTRACTION=1` you may see:
-- Prompt length + doc_type hints
+	- Prompt length + doc_type hints
 - Page counts & byte sizes
 - Model latency metrics
 - Multi grouping stats (groups, total pages)
@@ -238,11 +272,15 @@ With `DEBUG_EXTRACTION=1` you may see:
 | PDF pages cut off (single) | Over page cap | Raise `MAX_PAGES_RENDER` or use multi endpoint |
 | `url_too_large` | Remote file exceeded size limit | Increase `MAX_FILE_MB` if safe |
 | `model_inference_error` | Upstream call failed | Verify model name/connectivity |
-| `provide_exactly_one_source_variant` | Multiple source variants in single endpoint | Send only one of files/file/source_url/source_urls |
+| `provide_exactly_one_source` | Provided both file and url (ONE endpoint) | Supply exactly one source |
+| `choose_only_one_input_type` | Mixed files and urls in BATCH endpoint | Use only one input type |
+| `provide_files_or_urls` | Missing both files and urls in BATCH | Add at least one source |
 | `provide_exactly_one_source` | Multiple inputs in multi endpoint | Supply exactly one of file/source_url/file_path |
 | `pdf_support_requires_pymupdf` | PyMuPDF missing | Install dependency |
 | `url_fetch_error` | Network / non-200 response | Validate URL / availability |
 | `invalid_url_scheme` | Non-http/https URL | Use valid scheme |
+| (dedup silently) | Same URL repeated in batch | Only first instance kept |
+| (redirect followed) | 30x redirect chain | Final target fetched (fail → `url_fetch_error`) |
 | `internal_error` | Unexpected server exception | Check logs (stack trace recorded) |
 
 ---
@@ -286,7 +324,7 @@ With `DEBUG_EXTRACTION=1` you may see:
 import requests
 
 with open("sample/passport.jpg", "rb") as f:
-    r = requests.post("http://localhost:8000/extract/vision/single", files={"file": f})
+	r = requests.post("http://localhost:8000/extract/vision/one", files={"file": f})
 print(r.json())
 ```
 

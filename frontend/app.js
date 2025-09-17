@@ -18,6 +18,8 @@ const addFileBtn = document.getElementById('addFileBtn');
 const addUrlBtn = document.getElementById('addUrlBtn');
 const sourceModeRadios = document.querySelectorAll('input[name="sourceMode"]');
 const extractModeRadios = document.querySelectorAll('input[name="extractMode"]');
+// New: one vs batch variant inside former 'single' mode
+const singleVariantRadios = document.querySelectorAll('input[name="singleVariant"]');
 const multiDocsContainer = document.getElementById('multiDocsContainer');
 const multiDocsList = document.getElementById('multiDocsList');
 // Toggle single vs multi result display reset
@@ -34,6 +36,11 @@ extractModeRadios.forEach(r => {
 function getExtractMode(){
   const checked = document.querySelector('input[name="extractMode"]:checked');
   return checked ? checked.value : 'single';
+}
+
+function getSingleVariant(){
+  const checked = document.querySelector('input[name="singleVariant"]:checked');
+  return checked ? checked.value : 'one';
 }
 
 // Toggle visibility between file and URL inputs
@@ -136,8 +143,20 @@ form.addEventListener('submit', async (e) => { // Handle form submission
         return;
       }
       fd.append('file', selectedFiles[0]);
-    } else {
-      selectedFiles.forEach(f => fd.append('files', f));
+    } else { // single family: decide one vs batch
+      const singleVariant = getSingleVariant();
+      if(singleVariant === 'one') {
+        if(selectedFiles.length > 1){
+          setStatus('ONE mode accepts exactly one file. Switch to BATCH or remove extras.','warn');
+          return;
+        }
+        fd.append('file', selectedFiles[0]);
+      } else { // batch
+        if(selectedFiles.length === 1){
+          // still valid, batch can contain 1, send as files[]
+        }
+        selectedFiles.forEach(f => fd.append('files', f));
+      }
     }
   } else {
     const urlBoxes = [...urlInputsWrap.querySelectorAll('input[name="source_urls"]')];
@@ -153,10 +172,15 @@ form.addEventListener('submit', async (e) => { // Handle form submission
       }
       fd.append('source_url', cleaned[0]);
     } else {
-      if(cleaned.length === 1){
-        fd.append('source_url', cleaned[0]);
-      } else {
-        cleaned.forEach(u => fd.append('source_urls', u));
+      const singleVariant = getSingleVariant();
+      if(singleVariant === 'one') {
+        if(cleaned.length !== 1){
+          setStatus('ONE mode requires exactly one URL. Use BATCH for multiple.','warn');
+          return;
+        }
+        fd.append('url', cleaned[0]);
+      } else { // batch
+        cleaned.forEach(u => fd.append('urls', u));
       }
     }
   }
@@ -164,7 +188,13 @@ form.addEventListener('submit', async (e) => { // Handle form submission
   setStatus('Submitting & extracting...','info');
   resultSection.classList.add('hidden');
   try {
-  const endpoint = extractMode === 'multi' ? '/extract/vision/multi' : '/extract/vision/single';
+  let endpoint;
+  if(extractMode === 'multi') {
+    endpoint = '/extract/vision/multi';
+  } else {
+    const singleVariant = getSingleVariant();
+    endpoint = singleVariant === 'one' ? '/extract/vision/one' : '/extract/vision/batch';
+  }
   const resp = await fetch(endpoint, { method:'POST', body: fd });
     const text = await resp.text();
     let json;
