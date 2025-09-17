@@ -13,7 +13,7 @@ from typing import List, Dict, Any, Optional
 import time
 import json
 import logging
-from pydantic_ai import Agent, BinaryContent, PromptedOutput
+from pydantic_ai import Agent, BinaryContent, PromptedOutput, ModelSettings
 from pydantic import BaseModel, Field
 from app.core.config import get_settings
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -75,6 +75,7 @@ class VisionExtractor:
         # self.model = OpenAIChatModel(
         #     model_name=self.settings.VISION_MODEL,
         #     provider=OpenAIProvider(base_url=f"{self.settings.OLLAMA_BASE_URL}/v1"),
+        #     settings=ModelSettings(temperature=0.6, top_p=1.0)
         # )
         # Keeping this commented block documents how to pivot to a local gateway.
 
@@ -86,6 +87,7 @@ class VisionExtractor:
             self.model = GroqModel(
                 model_name=self.settings.VISION_MODEL,
                 provider=GroqProvider(api_key=groq_key),
+                settings=ModelSettings(temperature=0.3, top_p=1.0)
             )
         except Exception as e:
             raise RuntimeError(f"Failed to initialize Groq provider: {e}") from e
@@ -112,6 +114,7 @@ class VisionExtractor:
                 name="RawExtraction",
                 description=description
             ),
+            # model_settings=ModelSettings(temperature=0.3)
         )
 
     async def run(self, prompt: str | tuple, images: List[bytes]) -> Dict[str, Any]:
