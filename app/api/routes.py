@@ -109,10 +109,20 @@ async def process_file(upload_filename: str, raw_bytes: bytes, idx: int, *,
     prompt = build_prompt(doc_type, allowed_keys, require_conf=settings.REQUIRE_CONFIDENCE)
 
     try:
+    #     model_result = await vision_extractor.run(prompt, pages)
+    # except Exception as exc:
         model_result = await vision_extractor.run(prompt, pages)
+    except httpx.TimeoutException:
+        logger.error("Model inference timed out for request_id=%s file=%s", request_id, upload_filename)
+        raise HTTPException(504, "model_inference_timeout")
+    except httpx.RequestError as e:
+        logger.error("Network error during model inference: %s", e)
+        raise HTTPException(502, "model_inference_network_error")
     except Exception as exc:
-        logger.warning("model_inference_error request_id=%s file=%s err=%s", request_id, upload_filename, exc)
+        logger.error("Unexpected model inference error: %s", exc)
         raise HTTPException(502, "model_inference_error")
+        # logger.warning("model_inference_error request_id=%s file=%s err=%s", request_id, upload_filename, exc)
+        # raise HTTPException(502, "model_inference_error")
 
     raw = model_result.get("raw") or {}
     normalized = normalize(raw)
