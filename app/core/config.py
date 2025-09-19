@@ -18,7 +18,9 @@ Env vars (optional) and their roles:
 
 import os
 from functools import lru_cache
+from dotenv import load_dotenv
 
+load_dotenv()
 
 class Settings:
         """Central runtime switches.
@@ -29,14 +31,36 @@ class Settings:
         - Adjust / extend cautiously; keep only broadly useful runtime toggles here.
         """
 
+        # Hardcoded values
+        MAX_FILE_MB: int = 15  # Maximum upload size in megabytes
+        MAX_PAGES_RENDER: int = 4  # Maximum number of PDF pages to render
+        DEBUG_EXTRACTION: bool = True  # Enable verbose model & prompt debugging
+
+        
+        
         # ---- Core service endpoints / credentials (avoid embedding secrets in code) ----
         OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")  # Local or gateway model endpoint
-        GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "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")  # Provided externally; empty -> runtime error
+        GROQ_API_KEY: str = os.environ.get("GROQ_API_KEY")  # Provided externally; empty -> runtime error
+        HF_TOKEN: str = os.environ.get("HF_TOKEN")
+        
+        def __init__(self):
+                # Validate GROQ_API_KEY at runtime
+                if not self.HF_TOKEN:
+                        raise ValueError("GROQ_API_KEY is not set in the environment. Please configure it in your .env file or system environment")
+        
+        
+        def __init__(self):
+                # Validate GROQ_API_KEY at runtime
+                if not self.GROQ_API_KEY:
+                        raise ValueError("GROQ_API_KEY is not set in the environment. Please configure it in your .env file or system environment")
 
         # ---- Model selection ----
         # VISION_MODEL: str = os.getenv("VISION_MODEL", "gemma3:4b")  # Primary multimodal / vision model name
         # Alternate example retained for quick swapping (commented intentionally):
         VISION_MODEL: str = os.getenv("VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")  # Alternate higher‑capacity model
+        # Alternate Vision Model from Hugging Face
+        # VISION_MODEL: str = os.getenv("VISION_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
+        
 
         # ---- Resource & size guards ----
         MAX_FILE_MB: int = int(os.getenv("MAX_FILE_MB", "15"))          # Upload size cap (reject early to save memory)

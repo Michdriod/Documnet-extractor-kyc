@@ -10,6 +10,7 @@ Extended description:
 """
 
 from typing import List, Dict, Any, Optional
+import os
 import time
 import json
 import logging
@@ -22,6 +23,8 @@ from app.extraction.prompts import SYSTEM_PROMPT_BASE
 from pydantic_ai import Agent
 from pydantic_ai.models.groq import GroqModel
 from pydantic_ai.providers.groq import GroqProvider
+from pydantic_ai.models.huggingface import HuggingFaceModel
+from pydantic_ai.providers.huggingface import HuggingFaceProvider
 
 
 
@@ -77,12 +80,11 @@ class VisionExtractor:
         #     provider=OpenAIProvider(base_url=f"{self.settings.OLLAMA_BASE_URL}/v1"),
         #     settings=ModelSettings(temperature=0.6, top_p=1.0)
         # )
-        # Keeping this commented block documents how to pivot to a local gateway.
-
+                
+        
+        #Groq Model
         self.settings = get_settings()
         groq_key = self.settings.GROQ_API_KEY
-        if not groq_key:
-            raise RuntimeError("GROQ_API_KEY is required and no fallback is allowed.")
         try:
             self.model = GroqModel(
                 model_name=self.settings.VISION_MODEL,
@@ -91,6 +93,21 @@ class VisionExtractor:
             )
         except Exception as e:
             raise RuntimeError(f"Failed to initialize Groq provider: {e}") from e
+        
+        
+        # HuggingFace Model
+        # self.settings = get_settings()
+        # huggingface_key = self.settings.HF_TOKEN
+        # try:
+        #     self.model = HuggingFaceModel(
+        #         model_name=self.settings.VISION_MODEL,
+        #         provider=HuggingFaceProvider(api_key=huggingface_key)
+        #     )
+        # except Exception as e:
+        #     raise RuntimeError(f"Failed to initialize Hugging Face Provider: {e}") from e
+        
+        
+        
 
     def build_agent(self, system_prompt: str, description: str | None = None) -> Agent:
         """Instantiate an agent with the system prompt and optional description.
@@ -140,9 +157,9 @@ class VisionExtractor:
                 img_sizes,
                 bool(description),
             )
-            # Heuristic: warn early if model name unlikely vision-capable
-            if all(tok not in self.settings.VISION_MODEL.lower() for tok in ["llava", "vision", "clip", "mm", "multi", "pix", "phi-3-vision", "llama", "gemma3:4b", "minicpm-v:latest", "minicpm-v"]):
-                log.warning("model_name_may_not_be_vision_capable model=%s", self.settings.VISION_MODEL)
+            # # Heuristic: warn early if model name unlikely vision-capable
+            # if all(tok not in self.settings.VISION_MODEL.lower() for tok in ["llava", "vision", "clip", "mm", "multi", "pix", "phi-3-vision", "llama", "gemma3:4b", "minicpm-v:latest", "minicpm-v"]):
+            #     log.warning("model_name_may_not_be_vision_capable model=%s", self.settings.VISION_MODEL)
         agent = self.build_agent(system_prompt, description)
         inputs: List[Any] = []  # Ordered binary contents to agent
         # Only images now; all textual guidance lives in the system prompt.
