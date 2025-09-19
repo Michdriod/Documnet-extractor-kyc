@@ -355,3 +355,4 @@ Foundation for reliable, explainable KYC parsing: unified prompt, broad schema, 
 
 > Tune heuristics empirically—avoid premature complexity.
 
+docker run -p 8000:8000 --env-file .env document-extractor-kyc
